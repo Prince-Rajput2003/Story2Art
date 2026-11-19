@@ -36,7 +36,7 @@ def verify_password(password: str, password_hash: str) -> bool:
 
 def create_access_token(user: User) -> str:
     expire = datetime.utcnow() + timedelta(minutes=JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload = {"sub": user.email, "role": user.role, "exp": expire}
+    payload = {"sub": user.email, "role": user.role, "ver": user.token_version, "exp": expire}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
@@ -62,6 +62,8 @@ def get_current_user(
     user = db.query(User).filter(User.email == email).first()
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User account is not active.")
+    if payload.get("ver", 0) != user.token_version:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token.")
 
     return user
 

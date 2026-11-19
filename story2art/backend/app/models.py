@@ -17,6 +17,7 @@ class User(Base):
     role = Column(String(20), nullable=False, default="user")
     is_active = Column(Boolean, default=True, nullable=False)
     is_verified = Column(Boolean, default=False, nullable=False)
+    token_version = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
@@ -27,6 +28,31 @@ class User(Base):
     payments = relationship("Payment", back_populates="user", cascade="all, delete-orphan")
     credit_transactions = relationship("CreditTransaction", back_populates="user", cascade="all, delete-orphan")
     admin_logs = relationship("AdminActivityLog", back_populates="admin_user", cascade="all, delete-orphan")
+
+
+class PasswordResetChallenge(Base):
+    __tablename__ = "password_reset_challenges"
+
+    id = Column(String, primary_key=True, default=lambda: uuid.uuid4().hex)
+    user_id = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    email_digest = Column(String(64), unique=True, index=True, nullable=False)
+    otp_hash = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=True)
+    last_sent_at = Column(DateTime, nullable=True)
+    attempts = Column(Integer, default=0, nullable=False)
+    verified_at = Column(DateTime, nullable=True)
+    reset_token_hash = Column(String(64), nullable=True)
+    reset_token_expires_at = Column(DateTime, nullable=True)
+    consumed_at = Column(DateTime, nullable=True)
+
+
+class PasswordResetRateLimit(Base):
+    __tablename__ = "password_reset_rate_limits"
+
+    key_hash = Column(String(64), primary_key=True)
+    window_started_at = Column(DateTime, index=True, nullable=False)
+    request_count = Column(Integer, default=0, nullable=False)
 
 
 class UserProfile(Base):

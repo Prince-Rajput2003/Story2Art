@@ -15,15 +15,19 @@ def migrate_legacy_sqlite_schema() -> None:
 
     if DATABASE_URL.startswith("sqlite"):
         inspector = inspect(engine)
-        if not inspector.has_table("generated_images"):
-            return
-
-        columns = {column["name"] for column in inspector.get_columns("generated_images")}
+        tables = set(inspector.get_table_names())
         with engine.begin() as connection:
-            if "user_id" not in columns:
-                connection.execute(text("ALTER TABLE generated_images ADD COLUMN user_id VARCHAR"))
-            if "favorite" not in columns:
-                connection.execute(text("ALTER TABLE generated_images ADD COLUMN favorite BOOLEAN DEFAULT 0 NOT NULL"))
+            if "users" in tables:
+                user_columns = {column["name"] for column in inspector.get_columns("users")}
+                if "token_version" not in user_columns:
+                    connection.execute(text("ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 0 NOT NULL"))
+
+            if "generated_images" in tables:
+                image_columns = {column["name"] for column in inspector.get_columns("generated_images")}
+                if "user_id" not in image_columns:
+                    connection.execute(text("ALTER TABLE generated_images ADD COLUMN user_id VARCHAR"))
+                if "favorite" not in image_columns:
+                    connection.execute(text("ALTER TABLE generated_images ADD COLUMN favorite BOOLEAN DEFAULT 0 NOT NULL"))
 
 
 def init_db() -> None:
@@ -32,7 +36,19 @@ def init_db() -> None:
         seed_mongo_plans()
         return
 
-    from app.models import AdminActivityLog, CreditTransaction, CreditWallet, GeneratedImage, Payment, SubscriptionPlan, User, UserProfile, UserSubscription
+    from app.models import (
+        AdminActivityLog,
+        CreditTransaction,
+        CreditWallet,
+        GeneratedImage,
+        PasswordResetChallenge,
+        PasswordResetRateLimit,
+        Payment,
+        SubscriptionPlan,
+        User,
+        UserProfile,
+        UserSubscription,
+    )
 
     migrate_legacy_sqlite_schema()
     Base.metadata.create_all(bind=engine)

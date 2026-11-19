@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { getCurrentUser, setAuthToken } from '../services/api';
+import { getCurrentUser, logoutUser, setAuthToken } from '../services/api';
 
 const AuthContext = createContext(null);
 
@@ -41,11 +41,20 @@ export function AuthProvider({ children }) {
     localStorage.setItem('story2art_token', authToken);
   };
 
-  const logout = () => {
-    setToken('');
-    setUser(null);
-    setAuthToken(null);
-    localStorage.removeItem('story2art_token');
+  const logout = async () => {
+    let logoutError;
+    try {
+      if (token) await logoutUser();
+    } catch (error) {
+      logoutError = error;
+    } finally {
+      setToken('');
+      setUser(null);
+      setAuthToken(null);
+      localStorage.removeItem('story2art_token');
+    }
+
+    if (logoutError) throw logoutError;
   };
 
   const value = useMemo(

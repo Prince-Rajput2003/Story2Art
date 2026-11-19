@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { UserPlus } from 'lucide-react';
+import { Eye, EyeOff, UserPlus } from 'lucide-react';
 import { normalizeApiError, registerUser } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -10,6 +10,7 @@ function RegisterPage() {
   const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -65,14 +66,25 @@ function RegisterPage() {
           </div>
           <div>
             <label className="mb-2 block text-sm text-slate-200">Password</label>
-            <input
-              type="password"
-              value={form.password}
-              onChange={(e) => setForm({ ...form, password: e.target.value })}
-              className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-3 py-3 text-white outline-none focus:border-violet-400"
-              minLength={8}
-              required
-            />
+            <div className="relative">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                autoComplete="new-password"
+                value={form.password}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+                className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-3 py-3 pr-12 text-white outline-none focus:border-violet-400"
+                minLength={8}
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                className="absolute inset-y-0 right-3 text-slate-400 transition hover:text-white"
+              >
+                {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+              </button>
+            </div>
           </div>
 
           <button type="submit" disabled={loading} className="w-full rounded-full bg-gradient-to-r from-violet-500 to-fuchsia-500 px-4 py-3 font-semibold text-white disabled:opacity-60">

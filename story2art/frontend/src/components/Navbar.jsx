@@ -16,9 +16,15 @@ function Navbar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
-  const handleLogout = () => {
-    logout();
-    navigate('/login');
+  const handleLogout = async () => {
+    try {
+      await logout();
+      navigate('/login');
+    } catch {
+      navigate('/login', {
+        state: { notice: 'You were signed out on this device, but server-side session revocation could not be confirmed.' },
+      });
+    }
   };
 
   return (

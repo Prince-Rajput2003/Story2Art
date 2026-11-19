@@ -66,6 +66,8 @@ export const getCurrentUser = () => api.get('/api/auth/me');
 export const updateProfile = (payload) => api.put('/api/auth/profile', payload);
 export const logoutUser = () => api.post('/api/auth/logout');
 export const requestPasswordReset = (payload) => api.post('/api/auth/forgot-password', payload);
+export const verifyPasswordResetOtp = (payload) => api.post('/api/auth/verify-otp', payload);
+export const resendPasswordResetOtp = (payload) => api.post('/api/auth/resend-otp', payload);
 export const resetPassword = (payload) => api.post('/api/auth/reset-password', payload);
 
 export const getPlans = () => api.get('/api/plans');
