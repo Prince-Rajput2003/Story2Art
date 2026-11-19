@@ -49,7 +49,11 @@ function ResetPasswordPage() {
 
     setLoading(true);
     try {
-      await resetPassword({ reset_token: resetToken, new_password: password });
+      await resetPassword({
+        reset_token: resetToken,
+        new_password: password,
+        confirm_password: confirmPassword,
+      });
       setSuccess(true);
       window.setTimeout(() => {
         navigate('/login', {

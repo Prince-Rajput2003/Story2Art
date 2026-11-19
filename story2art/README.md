@@ -53,14 +53,15 @@ OPENAI_API_KEY=your_openai_api_key_here
 OPENAI_MODEL=gpt-image-1
 DATABASE_URL=sqlite:///./story2art.db
 FRONTEND_URL=http://localhost:5173
+APP_ENV=development
 JWT_SECRET=<at-least-32-random-characters>
 JWT_ALGORITHM=HS256
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES=1440
-SMTP_HOST=smtp.example.com
+SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
-SMTP_USERNAME=your-smtp-username
-SMTP_PASSWORD=your-smtp-password
-SMTP_FROM_EMAIL=your-verified-sender@example.com
+SMTP_USERNAME=your_gmail_address@gmail.com
+SMTP_PASSWORD=your_gmail_app_password
+SMTP_FROM_EMAIL=your_gmail_address@gmail.com
 SMTP_FROM_NAME=Story2Art
 WELCOME_CREDITS=25
 DEFAULT_CREDIT_COST=5
@@ -72,7 +73,15 @@ Generate a strong JWT secret before using the app:
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-Password reset requires a working SMTP server and a strong `JWT_SECRET`. Reset codes expire after five minutes, are single-use, and can be requested once per minute (with additional per-email and per-IP limits). The API returns the same generic response for registered and unregistered email addresses. If SMTP delivery fails, the code is invalidated and the failure is recorded without logging the address or code. Configure SMTP before expecting reset emails; an API response alone does not confirm delivery.
+For Gmail, set `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, `SMTP_USERNAME` and `SMTP_FROM_EMAIL` to your Gmail address, and `SMTP_PASSWORD` to a Google App Password (not your account password). Never commit the populated `backend/.env` file. Password reset also requires a strong `JWT_SECRET`. OTPs expire after five minutes, are stored only as keyed hashes, allow five verification attempts, and can be resent once per 60 seconds. Development allows 10 requests per email and 30 per IP per hour; production allows 5 per email and 15 per IP per hour. Set `APP_ENV=production` in production. SMTP is checked before rate-limit counters are changed, and the API returns an error if SMTP delivery fails.
+
+To clear only password-reset request counters in a local development SQLite database after testing, make sure `APP_ENV=development` is explicitly set in `backend/.env`, then run from `backend`:
+
+```bash
+python reset_password_reset_limits.py
+```
+
+The script refuses to run unless `APP_ENV=development`; it does not delete users, OTP challenges, or other application data.
 
 Important: if MONGODB_URI is left empty, the app automatically falls back to the local SQLite database. When a valid Atlas URI is present, MongoDB becomes the primary database.
 
@@ -95,6 +104,17 @@ npm run dev -- --host 0.0.0.0
 - Frontend: http://localhost:5173
 - Backend API: http://localhost:8000
 - API docs: http://localhost:8000/docs
+
+## Render backend deployment
+
+The repository includes a Render Blueprint at `render.yaml`. Create a Blueprint from the repository root, then provide:
+
+- `DATABASE_URL`: a Render PostgreSQL connection string (the backend converts Render's `postgresql://` URL to the installed psycopg driver).
+- `FRONTEND_URL`: the deployed frontend origin.
+- `OPENAI_API_KEY` and Cloudflare credentials for image generation.
+- Gmail SMTP username, App Password, and sender address for password-reset email.
+
+The service uses Python 3.11.11 (also pinned in `.python-version`) to match the backend's tested dependency environment. Its build command installs `backend/requirements.txt`; its start command binds Uvicorn to Render's `$PORT`.
 
 ## Notes
 

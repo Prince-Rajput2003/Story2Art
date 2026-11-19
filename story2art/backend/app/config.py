@@ -20,9 +20,19 @@ REMOTE_IMAGE_PROVIDER_TIMEOUT = float(os.getenv("REMOTE_IMAGE_PROVIDER_TIMEOUT",
 REMOTE_IMAGE_PROVIDER_RETRIES = int(os.getenv("REMOTE_IMAGE_PROVIDER_RETRIES", "2"))
 REMOTE_IMAGE_PROVIDER_API_KEY = os.getenv("REMOTE_IMAGE_PROVIDER_API_KEY", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./story2art.db").strip()
+if DATABASE_URL.startswith(("postgres://", "postgresql://")):
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+    else:
+        DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
 MONGODB_DATABASE = os.getenv("MONGODB_DATABASE", os.getenv("MONGODB_DB_NAME", "story2art")).strip()
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").strip()
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+if APP_ENV not in {"development", "testing", "production"}:
+    raise ValueError("APP_ENV must be development, testing, or production.")
+PASSWORD_RESET_EMAIL_LIMIT_PER_HOUR = 10 if APP_ENV == "development" else 5
+PASSWORD_RESET_IP_LIMIT_PER_HOUR = 30 if APP_ENV == "development" else 15
 JWT_SECRET = os.getenv("JWT_SECRET", "story2art-dev-secret-change-me").strip()
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256").strip()
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))

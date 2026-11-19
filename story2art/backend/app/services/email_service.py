@@ -17,11 +17,19 @@ class EmailDeliveryError(Exception):
     pass
 
 
+def is_password_reset_email_configured() -> bool:
+    return bool(
+        SMTP_HOST
+        and SMTP_FROM_EMAIL
+        and SMTP_USERNAME
+        and SMTP_PASSWORD
+        and 0 < SMTP_PORT < 65536
+    )
+
+
 def send_password_reset_email(recipient: str, otp: str) -> None:
-    if not SMTP_HOST or not SMTP_FROM_EMAIL:
+    if not is_password_reset_email_configured():
         raise EmailDeliveryError("Password reset email is not configured.")
-    if bool(SMTP_USERNAME) != bool(SMTP_PASSWORD):
-        raise EmailDeliveryError("SMTP username and password must both be configured.")
 
     message = EmailMessage()
     message["Subject"] = "Story2Art – Password Reset Verification Code"
@@ -45,7 +53,9 @@ def send_password_reset_email(recipient: str, otp: str) -> None:
             ) as server:
                 if SMTP_USERNAME:
                     server.login(SMTP_USERNAME, SMTP_PASSWORD)
-                server.send_message(message)
+                refused = server.send_message(message)
+                if refused:
+                    raise EmailDeliveryError("Password reset email was refused by the SMTP server.")
             return
 
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
@@ -54,6 +64,10 @@ def send_password_reset_email(recipient: str, otp: str) -> None:
             server.ehlo()
             if SMTP_USERNAME:
                 server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.send_message(message)
+            refused = server.send_message(message)
+            if refused:
+                raise EmailDeliveryError("Password reset email was refused by the SMTP server.")
+    except EmailDeliveryError:
+        raise
     except (OSError, smtplib.SMTPException) as exc:
         raise EmailDeliveryError("Password reset email could not be sent.") from exc

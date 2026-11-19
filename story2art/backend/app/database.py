@@ -4,7 +4,8 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from app.config import DATABASE_URL, DEFAULT_SUBSCRIPTION_PLANS, MONGODB_DATABASE, MONGODB_URI
 from app.mongo_store import ensure_indexes, seed_default_plans as seed_mongo_plans, use_mongodb
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine_options = {"connect_args": {"check_same_thread": False}} if DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(DATABASE_URL, **engine_options)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 

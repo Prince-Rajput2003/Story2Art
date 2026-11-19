@@ -1,22 +1,19 @@
 import hashlib
 import hmac
-import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 from app.config import (
     JWT_SECRET,
-    SMTP_FROM_EMAIL,
-    SMTP_HOST,
-    SMTP_PASSWORD,
-    SMTP_USERNAME,
+    PASSWORD_RESET_EMAIL_LIMIT_PER_HOUR,
+    PASSWORD_RESET_IP_LIMIT_PER_HOUR,
     WELCOME_CREDITS,
 )
-from app.database import SessionLocal, get_db
+from app.database import get_db
 from app.models import (
     CreditTransaction,
     CreditWallet,
@@ -26,19 +23,23 @@ from app.models import (
     UserProfile,
 )
 from app.services.auth_service import create_access_token, get_current_user, hash_password, verify_password
-from app.services.email_service import EmailDeliveryError, send_password_reset_email
+from app.services.email_service import (
+    EmailDeliveryError,
+    is_password_reset_email_configured,
+    send_password_reset_email,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-logger = logging.getLogger(__name__)
 
 OTP_EXPIRATION = timedelta(minutes=5)
 RESET_AUTHORIZATION_EXPIRATION = timedelta(minutes=10)
 RESEND_COOLDOWN = timedelta(seconds=60)
 RATE_LIMIT_WINDOW = timedelta(hours=1)
-MAX_EMAIL_REQUESTS_PER_HOUR = 5
-MAX_IP_REQUESTS_PER_HOUR = 15
+MAX_EMAIL_REQUESTS_PER_HOUR = PASSWORD_RESET_EMAIL_LIMIT_PER_HOUR
+MAX_IP_REQUESTS_PER_HOUR = PASSWORD_RESET_IP_LIMIT_PER_HOUR
 MAX_OTP_ATTEMPTS = 5
 RESET_REQUEST_MESSAGE = "If an account exists for this email, password reset instructions will be sent."
+
 
 class RegisterRequest(BaseModel):
     name: str = Field(..., min_length=2, max_length=120)
@@ -63,6 +64,7 @@ class VerifyOtpRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     reset_token: str = Field(..., min_length=32, max_length=128)
     new_password: str = Field(..., min_length=8, max_length=72)
+    confirm_password: str = Field(..., min_length=8, max_length=72)
 
     @field_validator("new_password")
     @classmethod
@@ -78,6 +80,12 @@ class ResetPasswordRequest(BaseModel):
         if not any(not char.isalnum() and not char.isspace() for char in value):
             raise ValueError("Password must contain a special character.")
         return value
+
+    @model_validator(mode="after")
+    def validate_password_confirmation(self):
+        if self.new_password != self.confirm_password:
+            raise ValueError("Passwords do not match.")
+        return self
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -109,7 +117,7 @@ def _utcnow() -> datetime:
 
 def _consume_request_limits(db: Session, email_digest: str, client_ip: str, now: datetime) -> bool:
     db.query(PasswordResetRateLimit).filter(
-        PasswordResetRateLimit.window_started_at < now - timedelta(days=1)
+        PasswordResetRateLimit.window_started_at < now - RATE_LIMIT_WINDOW
     ).delete(synchronize_session=False)
 
     buckets = (
@@ -138,49 +146,20 @@ def _consume_request_limits(db: Session, email_digest: str, client_ip: str, now:
     return True
 
 
-def _deliver_reset_email(email: str, otp: str, challenge_id: str) -> None:
-    try:
-        send_password_reset_email(email, otp)
-    except EmailDeliveryError:
-        db = SessionLocal()
-        try:
-            challenge = (
-                db.query(PasswordResetChallenge)
-                .filter(PasswordResetChallenge.id == challenge_id)
-                .first()
-            )
-            expected_hash = _keyed_digest("reset-otp", f"{challenge_id}:{otp}")
-            if challenge and challenge.otp_hash and hmac.compare_digest(challenge.otp_hash, expected_hash):
-                challenge.otp_hash = None
-                challenge.expires_at = None
-                db.commit()
-        finally:
-            db.close()
-        logger.error("Password reset email delivery failed.")
-
-
 def _request_password_reset(
     payload: ForgotPasswordRequest,
     request: Request,
     db: Session,
-    background_tasks: BackgroundTasks,
 ) -> dict[str, str]:
     now = _utcnow()
     email = str(payload.email).strip().lower()
     email_digest = _keyed_digest("reset-email", email)
     client_ip = request.client.host if request.client else "unknown"
 
-    if not _consume_request_limits(db, email_digest, client_ip, now):
-        db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many password reset requests. Please try again later.",
-        )
-    if not SMTP_HOST or not SMTP_FROM_EMAIL or bool(SMTP_USERNAME) != bool(SMTP_PASSWORD):
-        db.commit()
+    if not is_password_reset_email_configured():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Password reset email is not configured. Please contact support.",
+            detail="Password reset email is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, and SMTP_FROM_EMAIL in backend/.env.",
         )
 
     challenge = (
@@ -193,6 +172,13 @@ def _request_password_reset(
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Please wait 60 seconds before requesting another code.",
+        )
+
+    if not _consume_request_limits(db, email_digest, client_ip, now):
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many password reset requests. Please try again later.",
         )
 
     user = db.query(User).filter(User.email == email).first()
@@ -219,7 +205,17 @@ def _request_password_reset(
     db.commit()
 
     if challenge.user_id:
-        background_tasks.add_task(_deliver_reset_email, email, otp, challenge.id)
+        try:
+            send_password_reset_email(email, otp)
+        except EmailDeliveryError as exc:
+            challenge.otp_hash = None
+            challenge.expires_at = None
+            challenge.last_sent_at = None
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Password reset email could not be delivered. Check the SMTP settings and try again.",
+            ) from exc
 
     return {"message": RESET_REQUEST_MESSAGE}
 
@@ -298,20 +294,18 @@ def login_user(payload: LoginRequest, db: Session = Depends(get_db)):
 def forgot_password(
     payload: ForgotPasswordRequest,
     request: Request,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    return _request_password_reset(payload, request, db, background_tasks)
+    return _request_password_reset(payload, request, db)
 
 
 @router.post("/resend-otp")
 def resend_password_reset_otp(
     payload: ForgotPasswordRequest,
     request: Request,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    return _request_password_reset(payload, request, db, background_tasks)
+    return _request_password_reset(payload, request, db)
 
 
 @router.post("/verify-otp")

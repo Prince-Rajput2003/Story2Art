@@ -9,8 +9,12 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db, migrate_legacy_sqlite_schema
 from app.main import app
-from app.models import PasswordResetChallenge, User
-from app.routes.auth import _keyed_digest
+from app.models import PasswordResetChallenge, PasswordResetRateLimit, User
+from app.routes.auth import (
+    MAX_EMAIL_REQUESTS_PER_HOUR,
+    MAX_IP_REQUESTS_PER_HOUR,
+    _keyed_digest,
+)
 from app.services.auth_service import hash_password
 
 
@@ -48,15 +52,13 @@ class PasswordResetApiTests(unittest.TestCase):
         app.dependency_overrides[get_db] = override_get_db
         self.init_db_patch = patch("app.main.init_db")
         self.init_db_patch.start()
-        self.session_factory_patch = patch("app.routes.auth.SessionLocal", self.Session)
-        self.session_factory_patch.start()
         self.secret_patch = patch("app.routes.auth.JWT_SECRET", "test-only-reset-secret-with-more-than-32-characters")
         self.secret_patch.start()
         self.smtp_config_patches = [
-            patch("app.routes.auth.SMTP_HOST", "smtp.test"),
-            patch("app.routes.auth.SMTP_FROM_EMAIL", "no-reply@example.com"),
-            patch("app.routes.auth.SMTP_USERNAME", ""),
-            patch("app.routes.auth.SMTP_PASSWORD", ""),
+            patch("app.services.email_service.SMTP_HOST", "smtp.test"),
+            patch("app.services.email_service.SMTP_FROM_EMAIL", "no-reply@example.com"),
+            patch("app.services.email_service.SMTP_USERNAME", "test-user"),
+            patch("app.services.email_service.SMTP_PASSWORD", "test-password"),
         ]
         for config_patch in self.smtp_config_patches:
             config_patch.start()
@@ -72,7 +74,6 @@ class PasswordResetApiTests(unittest.TestCase):
         for config_patch in reversed(self.smtp_config_patches):
             config_patch.stop()
         self.secret_patch.stop()
-        self.session_factory_patch.stop()
         self.init_db_patch.stop()
         Base.metadata.drop_all(bind=self.engine)
         self.engine.dispose()
@@ -141,11 +142,25 @@ class PasswordResetApiTests(unittest.TestCase):
 
     def test_attempt_limit_and_resend_cooldown(self):
         _, otp = self.request_code()
+        email_digest = _keyed_digest("reset-email", "registered@example.com")
+        db = self.Session()
+        rate_limit = db.query(PasswordResetRateLimit).filter_by(
+            key_hash=_keyed_digest("rate-email", email_digest)
+        ).one()
+        original_count = rate_limit.request_count
+        db.close()
+
         throttled = self.client.post(
             "/api/auth/resend-otp",
             json={"email": "registered@example.com"},
         )
         self.assertEqual(throttled.status_code, 429)
+        db = self.Session()
+        rate_limit = db.query(PasswordResetRateLimit).filter_by(
+            key_hash=_keyed_digest("rate-email", email_digest)
+        ).one()
+        self.assertEqual(rate_limit.request_count, original_count)
+        db.close()
 
         wrong_code = "000000" if otp != "000000" else "000001"
         for _ in range(5):
@@ -176,19 +191,41 @@ class PasswordResetApiTests(unittest.TestCase):
 
         weak_password = self.client.post(
             "/api/auth/reset-password",
-            json={"reset_token": reset_token, "new_password": "weakpassword"},
+            json={
+                "reset_token": reset_token,
+                "new_password": "weakpassword",
+                "confirm_password": "weakpassword",
+            },
         )
         self.assertEqual(weak_password.status_code, 422)
 
         new_password = "NewSecurePassword2!"
+        mismatched_password = self.client.post(
+            "/api/auth/reset-password",
+            json={
+                "reset_token": reset_token,
+                "new_password": new_password,
+                "confirm_password": "DifferentPassword3!",
+            },
+        )
+        self.assertEqual(mismatched_password.status_code, 422)
+
         reset = self.client.post(
             "/api/auth/reset-password",
-            json={"reset_token": reset_token, "new_password": new_password},
+            json={
+                "reset_token": reset_token,
+                "new_password": new_password,
+                "confirm_password": new_password,
+            },
         )
         self.assertEqual(reset.status_code, 200)
         reused_authorization = self.client.post(
             "/api/auth/reset-password",
-            json={"reset_token": reset_token, "new_password": "AnotherSecure3!"},
+            json={
+                "reset_token": reset_token,
+                "new_password": "AnotherSecure3!",
+                "confirm_password": "AnotherSecure3!",
+            },
         )
         self.assertEqual(reused_authorization.status_code, 400)
         old_session = self.client.get(
@@ -217,14 +254,15 @@ class PasswordResetApiTests(unittest.TestCase):
 
         self.send_email.side_effect = EmailDeliveryError("mail unavailable")
         failed_delivery, _ = self.request_code()
-        self.assertEqual(failed_delivery.status_code, 200)
+        self.assertEqual(failed_delivery.status_code, 503)
         self.assertNotIn("otp", failed_delivery.text.lower())
         db = self.Session()
         challenge = db.query(PasswordResetChallenge).one()
         self.assertIsNone(challenge.otp_hash)
+        self.assertIsNone(challenge.last_sent_at)
         db.close()
 
-        with patch("app.routes.auth.SMTP_HOST", ""):
+        with patch("app.services.email_service.SMTP_HOST", ""):
             unavailable = self.client.post(
                 "/api/auth/forgot-password",
                 json={"email": "nobody@example.com"},
@@ -232,20 +270,91 @@ class PasswordResetApiTests(unittest.TestCase):
         self.assertEqual(unavailable.status_code, 503)
         self.assertIn("not configured", unavailable.json()["detail"].lower())
 
-    def test_request_rate_limit_is_shared_across_unknown_addresses(self):
-        for index in range(15):
+    def test_missing_smtp_does_not_consume_rate_limit(self):
+        with patch("app.services.email_service.SMTP_HOST", ""):
             response = self.client.post(
                 "/api/auth/forgot-password",
-                json={"email": f"unknown{index}@example.com"},
+                json={"email": "registered@example.com"},
             )
-            self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 503)
 
-        limited = self.client.post(
-            "/api/auth/forgot-password",
-            json={"email": "another-unknown@example.com"},
+        db = self.Session()
+        self.assertEqual(db.query(PasswordResetRateLimit).count(), 0)
+        db.close()
+
+    def test_resend_after_cooldown_sends_a_verifiable_code(self):
+        _, first_otp = self.request_code()
+        db = self.Session()
+        challenge = db.query(PasswordResetChallenge).one()
+        challenge.last_sent_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=61)
+        db.commit()
+        db.close()
+
+        response = self.client.post(
+            "/api/auth/resend-otp",
+            json={"email": "registered@example.com"},
         )
+        self.assertEqual(response.status_code, 200)
+        resent_otp = self.send_email.call_args.args[1]
+        self.assertRegex(resent_otp, r"^\d{6}$")
+        self.assertEqual(self.send_email.call_count, 2)
+
+        verified = self.client.post(
+            "/api/auth/verify-otp",
+            json={"email": "registered@example.com", "otp": resent_otp},
+        )
+        self.assertEqual(verified.status_code, 200)
+        self.assertNotIn(resent_otp, verified.text)
+        self.assertNotIn(first_otp, response.text)
+
+    def test_request_rate_limit_is_shared_across_unknown_addresses(self):
+        with patch("app.routes.auth.MAX_IP_REQUESTS_PER_HOUR", 15):
+            for index in range(15):
+                response = self.client.post(
+                    "/api/auth/forgot-password",
+                    json={"email": f"unknown{index}@example.com"},
+                )
+                self.assertEqual(response.status_code, 200)
+
+            limited = self.client.post(
+                "/api/auth/forgot-password",
+                json={"email": "another-unknown@example.com"},
+            )
         self.assertEqual(limited.status_code, 429)
         self.assertNotIn("registered", limited.json()["detail"].lower())
+
+    def test_expired_rate_limit_bucket_is_reset(self):
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        email_digest = _keyed_digest("reset-email", "unknown@example.com")
+        db = self.Session()
+        db.add(
+            PasswordResetRateLimit(
+                key_hash=_keyed_digest("rate-email", email_digest),
+                window_started_at=now - timedelta(hours=2),
+                request_count=MAX_EMAIL_REQUESTS_PER_HOUR,
+            )
+        )
+        db.add(
+            PasswordResetRateLimit(
+                key_hash=_keyed_digest("rate-ip", "testclient"),
+                window_started_at=now - timedelta(hours=2),
+                request_count=MAX_IP_REQUESTS_PER_HOUR,
+            )
+        )
+        db.commit()
+        db.close()
+
+        response = self.client.post(
+            "/api/auth/forgot-password",
+            json={"email": "unknown@example.com"},
+        )
+        self.assertEqual(response.status_code, 200)
+
+        db = self.Session()
+        buckets = db.query(PasswordResetRateLimit).all()
+        self.assertEqual(len(buckets), 2)
+        self.assertTrue(all(bucket.request_count == 1 for bucket in buckets))
+        db.close()
 
     def test_legacy_schema_migration_preserves_existing_rows(self):
         legacy_engine = create_engine("sqlite://")
