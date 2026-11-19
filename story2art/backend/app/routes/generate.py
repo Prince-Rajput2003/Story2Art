@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.utils.image_utils import image_to_data_url
 from app.models import CreditTransaction, GeneratedImage, User
 from app.schemas import EnhanceStoryRequest, GenerateRequest
 from app.services import openai_service, prompt_service
@@ -22,7 +23,7 @@ def enhance_story(payload: EnhanceStoryRequest, db: Session = Depends(get_db), c
 
 
 @router.post("/api/generate")
-def generate_story_image(payload: GenerateRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def generate_story_image(payload: GenerateRequest, request: Request, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     enhanced_prompt = payload.story
     if payload.enhance_story:
         try:
@@ -43,6 +44,7 @@ def generate_story_image(payload: GenerateRequest, db: Session = Depends(get_db)
             quality=payload.quality,
             negative_prompt=getattr(payload, "negative_prompt", None),
         )
+        image_data_url = image_to_data_url(filename)
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -79,7 +81,8 @@ def generate_story_image(payload: GenerateRequest, db: Session = Depends(get_db)
         "image": {
             "id": image_record.id,
             "filename": image_record.filename,
-            "image_url": f"http://localhost:8000/api/images/{image_record.filename}",
+            "image_url": str(request.url_for("serve_generated_image", filename=image_record.filename)),
+            "image_data_url": image_data_url,
             "image_style": image_record.image_style,
             "aspect_ratio": image_record.aspect_ratio,
             "quality": image_record.quality,

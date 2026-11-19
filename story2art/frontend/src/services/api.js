@@ -1,6 +1,21 @@
 import axios from 'axios';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://story2art-back.onrender.com/';
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0']);
+
+export const resolveImageUrl = (imageUrl) => {
+  if (typeof imageUrl !== 'string' || !imageUrl.trim()) return '';
+
+  const apiUrl = new URL(API_BASE_URL, window.location.origin);
+  const resolvedUrl = new URL(imageUrl, apiUrl);
+
+  if (LOCAL_HOSTS.has(resolvedUrl.hostname) && !LOCAL_HOSTS.has(apiUrl.hostname)) {
+    resolvedUrl.protocol = apiUrl.protocol;
+    resolvedUrl.host = apiUrl.host;
+  }
+
+  return resolvedUrl.href;
+};
 
 const api = axios.create({
   baseURL: API_BASE_URL,

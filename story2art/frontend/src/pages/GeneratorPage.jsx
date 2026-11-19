@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Download, Loader2, RefreshCcw, Sparkles, Wand2 } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { enhanceStory, generateStoryImage, getCurrentUser, normalizeApiError } from '../services/api';
+import { enhanceStory, generateStoryImage, getCurrentUser, normalizeApiError, resolveImageUrl } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
 const styleOptions = ['Realistic Photography', 'Cinematic', 'Anime', '3D Render', 'Digital Art', 'Fantasy', 'Oil Painting', 'Watercolor', 'Cartoon', 'Cyberpunk', 'Minimalist', 'Portrait Photography', 'Architecture', 'Landscape'];
@@ -20,6 +20,7 @@ function GeneratorPage() {
   const [isEnhancing, setIsEnhancing] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [generatedImage, setGeneratedImage] = useState(null);
+  const [imageLoadError, setImageLoadError] = useState(false);
   const [status, setStatus] = useState({ type: '', message: '' });
   const { user, setUser } = useAuth();
 
@@ -51,6 +52,7 @@ function GeneratorPage() {
     }
 
     setIsLoading(true);
+    setImageLoadError(false);
     setStatus({ type: '', message: '' });
 
     try {
@@ -63,14 +65,30 @@ function GeneratorPage() {
         negative_prompt: negativePrompt,
       });
 
-      if (!data?.image || !data.image.image_url) {
+      const imageUrl = resolveImageUrl(data?.image?.image_url);
+      const previewUrl = data?.image?.image_data_url || imageUrl;
+
+      if (!data?.image || !previewUrl) {
         throw new Error('The image response from the backend was missing a valid URL.');
       }
 
-      setGeneratedImage(data.image);
-      const { data: userData } = await getCurrentUser();
-      setUser(userData);
+      if (import.meta.env.DEV) {
+        console.debug('Image generation response fields:', {
+          responseKeys: Object.keys(data),
+          imageKeys: Object.keys(data.image),
+          imageUrl,
+          previewUsesDataUrl: Boolean(data.image.image_data_url),
+        });
+      }
+
+      setGeneratedImage({ ...data.image, image_url: imageUrl });
       setStatus({ type: 'success', message: 'Image generated successfully. Your artwork is ready to download.' });
+      getCurrentUser()
+        .then(({ data: userData }) => setUser(userData))
+        .catch((error) => {
+          const message = normalizeApiError(error, 'Your account details could not be refreshed.');
+          setStatus({ type: 'error', message: `Image generated, but account details could not be refreshed: ${message}` });
+        });
     } catch (error) {
       const message = normalizeApiError(error, 'Image generation failed. Please verify your API configuration.');
       setStatus({ type: 'error', message });
@@ -236,11 +254,21 @@ function GeneratorPage() {
 
           {generatedImage ? (
             <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
-              <img
-                src={generatedImage.image_url}
-                alt="Generated Story2Art preview"
-                className="h-[420px] w-full rounded-[24px] object-cover shadow-2xl shadow-violet-950/50"
-              />
+              {imageLoadError ? (
+                <div role="alert" className="flex h-[420px] items-center justify-center rounded-[24px] border border-rose-500/30 bg-slate-950/70 p-6 text-center text-rose-200">
+                  The generated image could not be loaded. Please try generating it again.
+                </div>
+              ) : (
+                <img
+                  src={generatedImage.image_data_url || generatedImage.image_url}
+                  alt="Generated Story2Art preview"
+                  onError={(event) => {
+                    console.error('Failed to load generated Story2Art image:', event.currentTarget.src);
+                    setImageLoadError(true);
+                  }}
+                  className="h-[420px] w-full rounded-[24px] object-cover shadow-2xl shadow-violet-950/50"
+                />
+              )}
               <div className="flex flex-wrap gap-3">
                 <a
                   href={generatedImage.image_url}
